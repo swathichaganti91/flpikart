@@ -1,14 +1,17 @@
-name: Debug AWS Access
+name: Deploy Prometheus and Grafana
 
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 env:
   CLUSTER_NAME: dev-cluster
   AWS_REGION: ap-south-1
+  NAMESPACE: prometheus
 
 jobs:
-  debug:
+  deploy:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code
@@ -21,19 +24,38 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Test AWS Credentials
+    - name: Setup EKS access
       run: |
-        echo "=== Testing AWS Credentials ==="
-        aws sts get-caller-identity
+        aws eks update-kubeconfig \
+          --region ${{ env.AWS_REGION }} \
+          --name ${{ env.CLUSTER_NAME }}
 
-    - name: Test EKS Access
-      run: |
-        echo "=== Testing EKS Cluster Access ==="
-        aws eks list-clusters --region ${{ env.AWS_REGION }}
-        aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query 'cluster.status'
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
 
-    - name: Test kubectl
+    - name: Deploy Prometheus
       run: |
-        echo "=== Testing kubectl ==="
-        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
-        kubectl get nodes
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        helm repo update
+        helm upgrade --install prometheus prometheus-community/prometheus \
+          --namespace ${{ env.NAMESPACE }} \
+          --set server.service.type=LoadBalancer \
+          --set server.persistentVolume.enabled=false
+
+    - name: Deploy Grafana
+      run: |
+        helm repo add grafana https://grafana.github.io/helm-charts
+        helm repo update
+        helm upgrade --install grafana grafana/grafana \
+          --namespace ${{ env.NAMESPACE }} \
+          --set service.type=LoadBalancer \
+          --set adminPassword=admin
+
+    - name: Display URLs
+      run: |
+        sleep 30
+        echo "=== 🚀 DEPLOYMENT COMPLETE ==="
+        echo "Grafana: http://$(kubectl get svc grafana -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+        echo "Prometheus: http://$(kubectl get svc prometheus-server -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+        echo "Username: admin"
+        echo "Password: admin"
