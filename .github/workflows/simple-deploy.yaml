@@ -1,0 +1,49 @@
+name: Simple Prometheus Grafana EKS Deployment
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ap-south-1
+
+    - name: Setup EKS kubeconfig
+      run: |
+        aws eks update-kubeconfig --region ap-south-1 --name dev-cluster
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+
+    - name: Deploy Prometheus
+      run: |
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        helm repo update
+        helm upgrade --install prometheus prometheus-community/prometheus \
+          -n monitoring --create-namespace
+
+    - name: Deploy Grafana
+      run: |
+        helm repo add grafana https://grafana.github.io/helm-charts
+        helm repo update
+        helm upgrade --install grafana grafana/grafana \
+          -n monitoring \
+          --set service.type=LoadBalancer \
+          --set adminPassword=admin
+
+    - name: Show endpoints
+      run: |
+        echo "Grafana URL:"
+        kubectl get svc grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+        echo ""
+        echo "Username: admin"
+        echo "Password: admin"
