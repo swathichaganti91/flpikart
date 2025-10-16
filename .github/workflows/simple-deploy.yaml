@@ -1,19 +1,15 @@
-name: Deploy Prometheus and Grafana
+name: Debug AWS Access
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 env:
   CLUSTER_NAME: dev-cluster
   AWS_REGION: ap-south-1
-  NAMESPACE: prometheus
 
 jobs:
-  deploy:
+  debug:
     runs-on: ubuntu-latest
-    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -25,45 +21,19 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Update kubeconfig
+    - name: Test AWS Credentials
       run: |
-        aws eks update-kubeconfig \
-          --region ${{ env.AWS_REGION }} \
-          --name ${{ env.CLUSTER_NAME }}
+        echo "=== Testing AWS Credentials ==="
+        aws sts get-caller-identity
 
-    - name: Check nodes
+    - name: Test EKS Access
       run: |
-        echo "=== Current Nodes ==="
+        echo "=== Testing EKS Cluster Access ==="
+        aws eks list-clusters --region ${{ env.AWS_REGION }}
+        aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query 'cluster.status'
+
+    - name: Test kubectl
+      run: |
+        echo "=== Testing kubectl ==="
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
         kubectl get nodes
-        echo ""
-        echo "If no nodes shown above, the deployment will fail."
-
-    - name: Setup Helm
-      uses: azure/setup-helm@v3
-
-    - name: Deploy Monitoring Stack
-      run: |
-        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-        helm repo add grafana https://grafana.github.io/helm-charts
-        helm repo update
-
-        helm upgrade --install prometheus prometheus-community/prometheus \
-          --namespace ${{ env.NAMESPACE }} \
-          --set server.service.type=LoadBalancer \
-          --set server.persistentVolume.enabled=false
-
-        helm upgrade --install grafana grafana/grafana \
-          --namespace ${{ env.NAMESPACE }} \
-          --set service.type=LoadBalancer \
-          --set persistence.enabled=false \
-          --set adminPassword=admin
-
-    - name: Wait and display results
-      run: |
-        sleep 60
-        echo "=== Deployment Status ==="
-        kubectl get pods,svc -n ${{ env.NAMESPACE }}
-        
-        echo ""
-        echo "=== LoadBalancer URLs ==="
-        kubectl get svc -n ${{ env.NAMESPACE }} -o wide
