@@ -1,4 +1,4 @@
-name: Test Helm Access
+name: Test Kubeconfig
 
 on:
   workflow_dispatch:
@@ -18,17 +18,19 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Setup kubectl and Helm
+    - name: Setup tools
       uses: azure/setup-helm@v3
 
-    - name: Test access
+    - name: Test kubeconfig approach
       run: |
-        # Configure kubeconfig
-        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+        # Create kubeconfig
+        aws eks update-kubeconfig \
+          --region ${{ env.AWS_REGION }} \
+          --name ${{ env.CLUSTER_NAME }} \
+          --kubeconfig /tmp/kubeconfig
         
-        echo "=== Testing kubectl ==="
-        kubectl get nodes
+        # Test kubectl
+        kubectl --kubeconfig /tmp/kubeconfig get nodes
         
-        echo "=== Testing Helm ==="
-        helm version
-        helm ls --all-namespaces || echo "No existing releases"
+        # Test Helm
+        helm --kubeconfig /tmp/kubeconfig ls --all-namespaces || echo "No releases found"
