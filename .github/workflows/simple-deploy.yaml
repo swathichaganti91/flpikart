@@ -1,22 +1,16 @@
-name: Deploy Prometheus and Grafana
+name: Test Helm Access
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 env:
   CLUSTER_NAME: dev-cluster
   AWS_REGION: ap-south-1
-  NAMESPACE: prometheus
 
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -24,38 +18,17 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Setup EKS access
-      run: |
-        aws eks update-kubeconfig \
-          --region ${{ env.AWS_REGION }} \
-          --name ${{ env.CLUSTER_NAME }}
-
-    - name: Setup Helm
+    - name: Setup kubectl and Helm
       uses: azure/setup-helm@v3
 
-    - name: Deploy Prometheus
+    - name: Test access
       run: |
-        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-        helm repo update
-        helm upgrade --install prometheus prometheus-community/prometheus \
-          --namespace ${{ env.NAMESPACE }} \
-          --set server.service.type=LoadBalancer \
-          --set server.persistentVolume.enabled=false
-
-    - name: Deploy Grafana
-      run: |
-        helm repo add grafana https://grafana.github.io/helm-charts
-        helm repo update
-        helm upgrade --install grafana grafana/grafana \
-          --namespace ${{ env.NAMESPACE }} \
-          --set service.type=LoadBalancer \
-          --set adminPassword=admin
-
-    - name: Display URLs
-      run: |
-        sleep 30
-        echo "=== 🚀 DEPLOYMENT COMPLETE ==="
-        echo "Grafana: http://$(kubectl get svc grafana -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
-        echo "Prometheus: http://$(kubectl get svc prometheus-server -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
-        echo "Username: admin"
-        echo "Password: admin"
+        # Configure kubeconfig
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+        
+        echo "=== Testing kubectl ==="
+        kubectl get nodes
+        
+        echo "=== Testing Helm ==="
+        helm version
+        helm ls --all-namespaces || echo "No existing releases"
