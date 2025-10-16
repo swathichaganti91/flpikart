@@ -1,49 +1,125 @@
-name: Simple Prometheus Grafana EKS Deployment
+name: Deploy Prometheus and Grafana on EKS Mumbai
 
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
+
+env:
+  CLUSTER_NAME: dev-cluster
+  AWS_REGION: ap-south-1
+  NAMESPACE: monitoring
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    
     steps:
-    - name: Checkout
+    - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Configure AWS
+    - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ap-south-1
+        aws-region: ${{ env.AWS_REGION }}
 
-    - name: Setup EKS kubeconfig
-      run: |
-        aws eks update-kubeconfig --region ap-south-1 --name dev-cluster
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
 
-    - name: Setup Helm
+    - name: Set up Helm
       uses: azure/setup-helm@v3
+
+    - name: Update kubeconfig for EKS Mumbai cluster
+      run: |
+        aws eks update-kubeconfig \
+          --region ${{ env.AWS_REGION }} \
+          --name ${{ env.CLUSTER_NAME }}
+
+    - name: Check cluster connectivity
+      run: |
+        echo "=== Checking EKS Cluster in Mumbai (ap-south-1) ==="
+        kubectl cluster-info
+        echo ""
+        kubectl get nodes
+        echo ""
+        echo "Cluster region: ${{ env.AWS_REGION }}"
+        echo "Cluster name: ${{ env.CLUSTER_NAME }}"
+
+    - name: Add Helm repositories
+      run: |
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        helm repo add grafana https://grafana.github.io/helm-charts
+        helm repo update
+
+    - name: Create monitoring namespace
+      run: |
+        kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
 
     - name: Deploy Prometheus
       run: |
-        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-        helm repo update
         helm upgrade --install prometheus prometheus-community/prometheus \
-          -n monitoring --create-namespace
+          --namespace ${{ env.NAMESPACE }} \
+          --set server.service.type=LoadBalancer \
+          --set server.persistentVolume.enabled=true \
+          --set server.persistentVolume.size=10Gi \
+          --set alertmanager.persistentVolume.enabled=true \
+          --set alertmanager.persistentVolume.size=2Gi
 
     - name: Deploy Grafana
       run: |
-        helm repo add grafana https://grafana.github.io/helm-charts
-        helm repo update
         helm upgrade --install grafana grafana/grafana \
-          -n monitoring \
+          --namespace ${{ env.NAMESPACE }} \
           --set service.type=LoadBalancer \
-          --set adminPassword=admin
+          --set persistence.enabled=true \
+          --set persistence.size=10Gi \
+          --set adminPassword=admin \
+          --set service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"="nlb"
 
-    - name: Show endpoints
+    - name: Wait for services to be ready
       run: |
-        echo "Grafana URL:"
-        kubectl get svc grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+        echo "=== Waiting for all pods to be ready ==="
+        kubectl wait --for=condition=ready pod -l app=prometheus -n ${{ env.NAMESPACE }} --timeout=600s
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=grafana -n ${{ env.NAMESPACE }} --timeout=600s
+        sleep 30
+
+    - name: Get LoadBalancer URLs
+      run: |
+        echo "=== 🚀 DEPLOYMENT COMPLETE ==="
         echo ""
-        echo "Username: admin"
-        echo "Password: admin"
+        echo "📍 Region: ${{ env.AWS_REGION }} (Mumbai)"
+        echo "🏷️ Cluster: ${{ env.CLUSTER_NAME }}"
+        echo ""
+        echo "📊 GRAFANA DASHBOARD:"
+        GRAFANA_URL=$(kubectl get svc grafana -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Initializing...")
+        echo "🌐 URL: http://$GRAFANA_URL"
+        echo "👤 Username: admin"
+        echo "🔑 Password: admin"
+        echo ""
+        echo "🔍 PROMETHEUS:"
+        PROMETHEUS_URL=$(kubectl get svc prometheus-server -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Initializing...")
+        echo "🌐 URL: http://$PROMETHEUS_URL"
+        echo ""
+        echo "=== 📋 RESOURCES STATUS ==="
+        kubectl get pods,svc -n ${{ env.NAMESPACE }}
+
+    - name: Monitor LoadBalancer creation
+      run: |
+        echo "=== 🔄 LoadBalancer Creation Status ==="
+        timeout 300 bash -c '
+        while true; do
+          GRAFANA_LB=$(kubectl get svc grafana -n ${{ env.NAMESPACE }} -o jsonpath="{.status.loadBalancer.ingress[0].hostname}" 2>/dev/null)
+          PROMETHEUS_LB=$(kubectl get svc prometheus-server -n ${{ env.NAMESPACE }} -o jsonpath="{.status.loadBalancer.ingress[0].hostname}" 2>/dev/null)
+          
+          if [[ -n "$GRAFANA_LB" && -n "$PROMETHEUS_LB" ]]; then
+            echo "✅ Both LoadBalancers are ready!"
+            echo "Grafana: http://$GRAFANA_LB"
+            echo "Prometheus: http://$PROMETHEUS_LB"
+            break
+          else
+            echo "⏳ Waiting for LoadBalancers..."
+            sleep 30
+          fi
+        done
+        ' || echo "LoadBalancers taking longer than expected. Check AWS Console."
